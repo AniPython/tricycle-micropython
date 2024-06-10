@@ -1,8 +1,9 @@
+# IDE-specific files
 .idea/
 .vscode/
 
+# System files
 # mac
 .DS_Store
-
 # windows
 Thumbs.db
