@@ -8,6 +8,8 @@ import socket
 import cv2
 import cv2.aruco as aruco
 import numpy as np
+import time
+
 
 # Camera 类
 class Camera:
@@ -147,8 +149,8 @@ class Controller:
         font_scale = 1
         color = (0, 230, 0)
         thickness = 2
-        cv2.putText(frame, f"Angle: {angle:.2f}", (800, 50), font, font_scale, color, thickness, cv2.LINE_AA)
-        cv2.putText(frame, f"Distance: {distance:.2f}", (800, 100), font, font_scale, color, thickness, cv2.LINE_AA)
+        cv2.putText(frame, f"Angle: {angle:.2f}", (500, 50), font, font_scale, color, thickness, cv2.LINE_AA)
+        cv2.putText(frame, f"Distance: {distance:.2f}", (500, 100), font, font_scale, color, thickness, cv2.LINE_AA)
 
     def process_frame(self, frame):
         """发送角度和距离数据到 esp32"""
@@ -199,6 +201,16 @@ class Controller:
     def run(self):
         try:
             while True:
+                global counter, start_time
+                # 每 100 次循环打印一次所需时间
+                counter += 1
+                if counter % 100 == 0:
+                    end_time = time.time()
+                    elapsed_time = end_time - start_time
+                    print(f"100 次循环用时: {elapsed_time:.6f} 秒, 平均每次: {elapsed_time / 100:.6f} 秒")
+                    # 重置开始时间
+                    start_time = time.time()
+
                 frame = self.camera.read_frame()
                 frame = self.process_frame(frame)
                 cv2.imshow('frame', frame)
@@ -211,6 +223,9 @@ class Controller:
 
 
 if __name__ == '__main__':
+    # 初始化计数器和开始时间
+    counter = 0
+    start_time = time.time()
 
     STOP_DISTANCE = 60
 
@@ -225,7 +240,7 @@ if __name__ == '__main__':
         max_radius=60,
         esp32_ip='192.168.3.190',
         esp32_port=12345,
-        send_data=True
+        send_data=False
     )
     controller.run()
 

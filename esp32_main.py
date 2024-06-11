@@ -4,6 +4,7 @@ import network
 import time
 import ujson
 import _thread
+from collections import OrderedDict
 
 # ######################################################
 # 配置全局变量开始
@@ -25,28 +26,36 @@ SUCCESS_DISTANCE = 60
 IN1, IN2, IN3, IN4 = 12, 14, 27, 26
 
 # 初始化电机 PWM
-MOTORS = {
-    "left": [PWM(Pin(IN1), freq=1000), PWM(Pin(IN2), freq=1000)],
-    "right": [PWM(Pin(IN3), freq=1000), PWM(Pin(IN4), freq=1000)],
-}
-
+LEFT_PWM1 = PWM(Pin(IN1), freq=1000)
+LEFT_PWM2 = PWM(Pin(IN2), freq=1000)
+RIGHT_PWM1 = PWM(Pin(IN3), freq=1000)
+RIGHT_PWM2 = PWM(Pin(IN4), freq=1000)
 
 # PID 控制参数
-Kp_dist = 0.5
-Ki_dist = 0.001
-Kd_dist = 0.08
+pid_data = OrderedDict([
+    # PID 控制参数
+    # 1. 距离
+    ("kp_dist", 0.5),
+    ("ki_dist", 0.001),
+    ("kd_dist", 0.08),
+    # 2. 角度
+    ("kp_angle", 3),
+    ("ki_angle", 0.03),
+    ("kd_angle", 2),
 
-Kp_angle = 3
-Ki_angle = 0.03
-Kd_angle = 2
+    # 上次循环误差
+    ("pre_error_dist", 0),
+    ("pre_error_angle", 0),
 
-# 上次循环误差
-pre_error_dist = 0
-pre_error_angle = 0
+    # 积累误差
+    ("integral_dist", 0),
+    ("integral_angle", 0),
 
-# 积累误差
-integral_dist = 0
-integral_angle = 0
+    # 目标值
+    ("target_angle", 0),
+    ("target_distance", 150)
+])
+
 
 # ######################################################
 # 配置全局变量结束
@@ -68,52 +77,68 @@ def connect_wifi():
 
 
 def stop_motor():
-    global pre_error_dist, integral_dist, pre_error_angle, integral_angle
-    for motor in MOTORS.values():
-        for pwm in motor:
-            pwm.duty(0)
-    pre_error_dist = 0
-    integral_dist = 0
-    pre_error_angle = 0
-    integral_angle = 0
+
+    LEFT_PWM1.duty(0)
+    LEFT_PWM2.duty(0)
+    RIGHT_PWM1.duty(0)
+    RIGHT_PWM2.duty(0)
+
+    pid_data["pre_error_dist"] = 0
+    pid_data["integral_dist"] = 0
+    pid_data["pre_error_angle"] = 0
+    pid_data["integral_angle"] = 0
+
     print("Motor stopped!")
 
 
 def limit_value(value, min_value=0, max_value=1023):
     return max(min_value, min(max_value, value))
 
-def set_motor_speed(left_speed, right_speed):
-    def set_pwm(pwm1, pwm2, speed):
-        if speed > 0:
-            pwm1.duty(0)
-            pwm2.duty(limit_value(abs(speed) + MOTOR_MIN_DUTY))
-        else:
-            pwm1.duty(limit_value(abs(speed) + MOTOR_MIN_DUTY))
-            pwm2.duty(0)
 
-    set_pwm(*MOTORS["left"], left_speed)
-    set_pwm(*MOTORS["right"], right_speed)
+def set_motor_speed(left_speed, right_speed):
+
+    if left_speed > 0:
+        LEFT_PWM1.duty(0)
+        LEFT_PWM2.duty(limit_value(abs(left_speed) + MOTOR_MIN_DUTY))
+    else:
+        LEFT_PWM1.duty(limit_value(abs(left_speed) + MOTOR_MIN_DUTY))
+        LEFT_PWM2.duty(0)
+
+    if right_speed > 0:
+        RIGHT_PWM1.duty(0)
+        RIGHT_PWM2.duty(limit_value(abs(right_speed) + MOTOR_MIN_DUTY))
+    else:
+        RIGHT_PWM1.duty(limit_value(abs(right_speed) + MOTOR_MIN_DUTY))
+        RIGHT_PWM2.duty(0)
 
 
 # PID 控制
 def pid_control(angle, distance):
-    global pre_error_dist, integral_dist, pre_error_angle, integral_angle
+    global pid_data
 
     # 计算距离误差
-    error_dist = distance
-    integral_dist += error_dist
-    diff_dist = error_dist - pre_error_dist
-    pre_error_dist = error_dist
+    error_dist = distance - pid_data["target_distance"]
+    pid_data["integral_dist"] += error_dist
+    diff_dist = error_dist - pid_data["pre_error_dist"]
+    pid_data["pre_error_dist"] = error_dist
 
     # 计算角度误差
-    error_angle = angle
-    integral_angle += error_angle
-    diff_angle = error_angle - pre_error_angle
-    pre_error_angle = error_angle
+    error_angle = angle - pid_data["target_angle"]
+    pid_data["integral_angle"] += error_angle
+    diff_angle = error_angle - pid_data["pre_error_angle"]
+    pid_data["pre_error_angle"] = error_angle
 
     # PID 控制计算
-    control_signal_dist = Kp_dist * error_dist + Ki_dist * integral_dist + Kd_dist * diff_dist
-    control_signal_angle = Kp_angle * error_angle + Ki_angle * integral_angle + Kd_angle * diff_angle
+    control_signal_dist = (
+            pid_data["kp_dist"] * error_dist +
+            pid_data["ki_dist"] * pid_data["integral_dist"] +
+            pid_data["kd_dist"] * diff_dist
+    )
+    control_signal_angle = (
+            pid_data["kp_angle"] * error_angle +
+            pid_data["ki_angle"] * pid_data["integral_angle"] +
+            pid_data["kd_angle"] * diff_angle
+    )
 
     # 先忽略角度，测试两个轮子转动方向是否正确，
     # 如果左轮不正确， 调换 MOTORS 的 IN1 和 IN2 位置
@@ -129,7 +154,9 @@ def pid_control(angle, distance):
 
 # 数据连接处理
 def handle_data_connection(conn_data):
+
     while True:
+        # 接收数据
         data = conn_data.recv(1024)
         if not data:
             break
@@ -138,6 +165,7 @@ def handle_data_connection(conn_data):
 
             # 没有检测到目标, 暂停电机
             if command == "0:0":
+                # print("No target detected, stop motor")
                 stop_motor()
                 conn_data.sendall(b'OK\n')
                 continue
@@ -148,6 +176,7 @@ def handle_data_connection(conn_data):
 
             # 判断如果完成任务, 暂停电机
             if abs(angle) < SUCCESS_ANGLE and abs(distance) < SUCCESS_DISTANCE:
+                # print("Mission completed, stop motor")
                 stop_motor()
                 conn_data.sendall(b'OK\n')
                 continue
@@ -168,23 +197,12 @@ def handle_data_connection(conn_data):
 
 
 def handle_pid_connection(conn_pid):
-    global Kp_dist, Ki_dist, Kd_dist, Kp_angle, Ki_angle, Kd_angle
+    global pid_data
     data = conn_pid.recv(1024)
     try:
         params = ujson.loads(data.decode().strip())
-        if 'Kp_dist' in params:
-            Kp_dist = params['Kp_dist']
-        if 'Ki_dist' in params:
-            Ki_dist = params['Ki_dist']
-        if 'Kd_dist' in params:
-            Kd_dist = params['Kd_dist']
-        if 'Kp_angle' in params:
-            Kp_angle = params['Kp_angle']
-        if 'Ki_angle' in params:
-            Ki_angle = params['Ki_angle']
-        if 'Kd_angle' in params:
-            Kd_angle = params['Kd_angle']
-        print(f"Updated PID parameters:\n{Kp_dist=}\n{Ki_dist=}\n{Kd_dist=}\n{Kp_angle=}\n{Ki_angle=}\n{Kd_angle=}\n")
+        pid_data.update(params)
+        print(f"Updated PID parameters: \n{pid_data}\n")
         conn_pid.sendall(b'OK\n')
     except Exception as e:
         print(f"Error: {e}")
