@@ -10,4 +10,6 @@ Thumbs.db
 
 *.psd
 ignore/
-temp*
+temp_code/
+
+ws/

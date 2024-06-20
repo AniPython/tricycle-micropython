@@ -1,8 +1,7 @@
 """
 ArUco 生成: https://chev.me/arucogen/
 """
-
-
+import json
 from typing import Tuple
 import socket
 import cv2
@@ -27,6 +26,7 @@ class Camera:
 
     def release(self):
         self.cap.release()
+
 
 # ArUco 检测器
 class ArUcoDetector:
@@ -91,36 +91,41 @@ class CircleDetector:
 
 
 # socket 通信类
-class Communication:
-    def __init__(self, ip, port, send_data: bool):
-        self.send_data = send_data
-        if self.send_data:
-            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            try:
-                self.sock.connect((ip, port))
-            except Exception as e:
-                raise ConnectionError(f"Unable to connect to ESP32: {e}")
+class UdpClient:
+    def __init__(self, host: str, port: int):
+        self.host = host
+        self.port = port
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-    def send(self, message):
+    def send(self, message: str):
         """发送数据"""
-        if self.send_data:
-            self.sock.sendall(message.encode())
-            self.sock.recv(3)
+        self.sock.sendto(message.encode('utf-8'), (self.host, self.port))
 
     def close(self):
         """关闭连接"""
-        if self.send_data:
-            self.sock.close()
+        self.sock.close()
+
+    def __del__(self):
+        self.close()
+
 
 # 控制类
 class Controller:
     def __init__(self, camera_id, aruco_id,
                  hsv_color, param1, param2, min_dist, min_radius, max_radius,
-                 esp32_ip, esp32_port, send_data: bool):
+                 esp32_ip=None, esp32_port=None,
+                 flask_ip=None, flask_port=None):
         self.camera = Camera(camera_id)
         self.aruco_detector = ArUcoDetector(aruco_id)
         self.circle_detector = CircleDetector(hsv_color, param1, param2, min_dist, min_radius, max_radius)
-        self.communication = Communication(esp32_ip, esp32_port, send_data)
+        if esp32_ip and esp32_port:
+            self.esp32_communication = UdpClient(esp32_ip, esp32_port)
+        else:
+            self.esp32_communication = None
+        if flask_ip and flask_port:
+            self.flask_communication = UdpClient(flask_ip, flask_port)
+        else:
+            self.flask_communication = None
 
     def calculate_corner_center(self, corner) -> Tuple[int, int]:
         """返回 arUco 的中点"""
@@ -152,6 +157,13 @@ class Controller:
         cv2.putText(frame, f"Angle: {angle:.2f}", (500, 50), font, font_scale, color, thickness, cv2.LINE_AA)
         cv2.putText(frame, f"Distance: {distance:.2f}", (500, 100), font, font_scale, color, thickness, cv2.LINE_AA)
 
+    def send_data(self, angle, distance):
+        command = json.dumps({'angle': round(angle, 2), 'distance': round(distance, 2)})
+        if self.esp32_communication:
+            self.esp32_communication.send(command)
+        if self.flask_communication:
+            self.flask_communication.send(command)
+
     def process_frame(self, frame):
         """发送角度和距离数据到 esp32"""
         corners, ids = self.aruco_detector.detect(frame)
@@ -162,6 +174,11 @@ class Controller:
         if ids is not None:
             ids_list = list(ids.ravel())
             self.aruco_detector.draw_markers(frame, corners, ids)
+
+        if ids is None:
+            self.send_data(0, 0)
+            time.sleep(0.5)
+            return frame
 
         if (ids is not None) and (self.aruco_detector.marker_id in ids) and (hough_circles is not None):
             corner_car_index = ids_list.index(self.aruco_detector.marker_id)
@@ -188,14 +205,11 @@ class Controller:
             self.draw_lines_by_dots(frame, center_car, center_car_line1, center_circle)
             self.show_angle_and_distance(frame, angle, distance)
 
-            if distance < STOP_DISTANCE:
-                command = '0:0\n'
-            else:
-                command = f'{angle:.2f}:{distance:.2f}\n'
+            self.send_data(angle, distance)
+            # print(f"send_data --> Angle: {angle:.2f}, Distance: {distance:.2f}")
         else:
-            command = '0:0\n'
+            pass
 
-        self.communication.send(command)
         return frame
 
     def run(self):
@@ -218,7 +232,7 @@ class Controller:
                     break
         finally:
             self.camera.release()
-            self.communication.close()
+            self.esp32_communication.close()
             cv2.destroyAllWindows()
 
 
@@ -227,20 +241,18 @@ if __name__ == '__main__':
     counter = 0
     start_time = time.time()
 
-    STOP_DISTANCE = 60
-
     controller = Controller(
-        camera_id=0,
-        aruco_id=17,
-        hsv_color=np.array([9, 195, 231]),  # 使用 get_hsv.py 获取
+        camera_id=0,  # 摄像头 ID, 0, 1, 2... 逐个尝试一下
+        aruco_id=30,  # 小车上的 arUco ID（https://chev.me/arucogen/）
+        hsv_color=np.array([9, 190, 234]),  # 使用 get_hsv.py 获取
         param1=35,  # 边缘检测, 较低的值可以检测到更多的边缘
         param2=25,  # 圆形检测, 较低的值可以检测到更多的圆形
-        min_dist=100,
-        min_radius=10,
-        max_radius=60,
-        esp32_ip='192.168.3.190',
-        esp32_port=12345,
-        send_data=False
+        min_dist=100,  # 圆心与圆心之间的最小距离圆心
+        min_radius=10,  # 圆的最小半径
+        max_radius=60,  # 圆的最大半径
+        esp32_ip='192.168.3.190',  # esp32 IP，设置为 None 侧不发消息
+        esp32_port=10000,  # esp32 端口，设置为 None 侧不发消息
+        flask_ip='localhost',  # flask IP，设置为 None 侧不发消息
+        flask_port=10001,  # flask 端口，设置为 None 侧不发消息
     )
     controller.run()
-

@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-time Chart with Chart.js</title>
+    <script src="../static/js/chart.js"></script>
+    <script src="../static/js/socket.io.js"></script>
+    <script src="../static/js/vue.js"></script>
+    <style>
+        .fixed-width-label {
+            width: 16ch;
+        }
+
+    </style>
+    <link rel="stylesheet" href="../static/css/bootstrap.css">
+</head>
+<body>
+<div id="app" class="container-fluid my-5">
+    <div class="row my-3">
+        <div class="col-6">
+            <h1>Angle Chart</h1>
+            <angle-chart :data="angleData" :options="angleOptions"></angle-chart>
+
+        </div>
+        <div class="col-6">
+            <h1>Distance Chart</h1>
+            <distance-chart :data="distanceData" :options="distanceOptions"></distance-chart>
+        </div>
+    </div>
+
+    <hr>
+
+    <div class="low fs-3">参数设置</div>
+
+    <div v-for="(value, key, index) in cruPid" :key="index" :class="'row fs-5 mb-3 g-3 align-items-center ' + key">
+        <div class="col-auto">
+            <label :for="key" class="col-form-label fixed-width-label">[[key]]:</label>
+        </div>
+        <div class="col-auto">
+
+            <div class="input-group">
+                <input type="number" class="form-control" :id="key">
+                <button @click="setPidParam(key)" class="btn btn-outline-primary" type="button" :id="key + '_btn'">Set
+                </button>
+            </div>
+
+        </div>
+        <div class="col-auto">
+            <span :id="key + 'HelpInline'" class="form-text">
+              当前值: [[ cruPid[key] ]]
+            </span>
+        </div>
+    </div>
+    <button class="btn btn-info btn-lg" @click="resetPidParams()">重置参数</button>
+</div>
+<script>
+
+    const {createApp} = Vue
+
+    createApp({
+        data() {
+            return {
+                socket: null,
+                angleData: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Angle',
+                        borderColor: 'rgb(255, 99, 132)',
+                        data: []
+                    }]
+                },
+                distanceData: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Distance',
+                        borderColor: 'rgb(54, 162, 235)',
+                        data: []
+                    }]
+                },
+                angleOptions: {
+                    scales: {
+                        y: {
+                            min: -180,
+                            max: 180
+                        }
+                    },
+                    animation: false
+                },
+                distanceOptions: {
+                    scales: {
+                        y: {
+                            min: 0,
+                            max: 1000
+                        }
+                    },
+                    animation: false
+                },
+                cruPid: {}
+            }
+        },
+        created() {
+            this.socket = io();
+            this.initSocket();
+        },
+        methods: {
+            initSocket() {
+                this.socket.on('connect', () => {
+                    console.log('Connected to server');
+                })
+                this.socket.on('disconnect', () => {
+                    console.log('Disconnected from server');
+                })
+                this.socket.on('update_chart_data', (data) => {
+                    this.updateChartData(data);
+                });
+                this.socket.on('show_cur_pid', (data) => {
+                    this.updateCurPid(data);
+                })
+
+            },
+            updateCurPid(data) {
+                for (const key in data) {
+                    if (data.hasOwnProperty(key)) {
+                        this.cruPid[key] = data[key];
+                    }
+                }
+            },
+            // updateChartData(data) {
+            //     // console.log(data)
+            //     let angles = data.angle;
+            //     let distances = data.distance;
+            //
+            //     this.angleData.labels = Array.from({length: angles.length}, (_, i) => i + 1);
+            //     this.angleData.datasets[0].data = angles;
+            //
+            //     this.distanceData.labels = Array.from({length: distances.length}, (_, i) => i + 1);
+            //     this.distanceData.datasets[0].data = distances;
+            // },
+
+            updateChartData(data) {
+                this.angleData = {
+                    labels: Array.from({ length: data.angle.length }, (_, i) => i + 1),
+                    datasets: [{
+                        label: 'Angle',
+                        borderColor: 'rgb(255, 99, 132)',
+                        data: data.angle
+                    }]
+                };
+                this.distanceData = {
+                    labels: Array.from({ length: data.distance.length }, (_, i) => i + 1),
+                    datasets: [{
+                        label: 'Distance',
+                        borderColor: 'rgb(54, 162, 235)',
+                        data: data.distance
+                    }]
+                };
+            },
+
+            setPidParam(param) {
+                const value = document.getElementById(param).value
+                console.log(`Set ${param} to ${value}`)
+                this.socket.emit('set_pid_param', {param: param, value: value})
+
+                console.log(this.cruPid);
+            },
+            resetPidParams() {
+                console.log(`Reset pid to default`)
+                this.socket.emit('set_pid_param', {param: "reset", value: -1})
+            },
+        },
+        delimiters: ['[[', ']]'],
+        components: {
+            'angle-chart': {
+                props: ['data', 'options'],
+                template: '<canvas></canvas>',
+                mounted() {
+                    var ctx = this.$el.getContext('2d');
+                    this.chart = new Chart(ctx, {
+                        type: 'line',
+                        data: this.data,
+                        options: this.options
+                    });
+                },
+                watch: {
+                    data(newData) {
+                        this.chart.data = newData;
+                        this.chart.update();
+                    }
+                }
+            },
+            'distance-chart': {
+                props: ['data', 'options'],
+                template: '<canvas></canvas>',
+                mounted() {
+                    var ctx = this.$el.getContext('2d');
+                    this.chart = new Chart(ctx, {
+                        type: 'line',
+                        data: this.data,
+                        options: this.options
+                    });
+                },
+                watch: {
+                    data(newData) {
+                        this.chart.data = newData;
+                        this.chart.update();
+                    }
+                }
+            }
+        },
+    }).mount('#app')
+
+</script>
+</body>
+</html>
